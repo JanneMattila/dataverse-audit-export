@@ -1,0 +1,6 @@
+**
+!*.cs
+!DataverseAuditExporter.csproj
+!appsettings.json
+!Dockerfile
+!.dockerignore
