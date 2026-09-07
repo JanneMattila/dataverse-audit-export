@@ -27,7 +27,7 @@ Run only one complete export cycle:
 
 Use `-IntervalSeconds` to change the default five-second delay between scheduled pulls.
 
-By default, assets are written to `scripts/Exports/yyyy/MM/dd/<auditid>.json`. The script follows every `@odata.nextLink`, stores its checkpoint in `scripts/export-audit-logs.state.json`, and keeps an audit ID index beside it. Delta requests include the last successful `createdon` timestamp; the inclusive boundary can return records again, so duplicate `auditid` values are skipped. The checkpoint advances only after the complete paged response has been persisted successfully.
+By default, assets are written to `scripts/Exports/yyyy/MM/dd/<auditid>.json`. The script follows every `@odata.nextLink`, stores its checkpoint in `scripts/export-audit-logs.state.json`, and keeps an audit ID index beside it. Delta requests start inclusively at the exact last successful `createdon` timestamp, preventing a timestamp gap even when multiple records share the boundary. The checkpoint advances only after the complete paged response has been persisted successfully. Replayed records are skipped by `auditid`.
 
 Use a separate `-StatePath` when changing the organization or export path. Remove both the state JSON and its `.auditids.txt` index only when intentionally starting a fresh export.
 
