@@ -11,6 +11,11 @@
 *.sln.docstates
 *.env
 
+# Dataverse audit export data and resumable state
+scripts/Exports/
+scripts/export-audit-logs.state.json
+scripts/export-audit-logs.state.auditids.txt
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 
