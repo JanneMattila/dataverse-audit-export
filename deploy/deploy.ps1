@@ -1,14 +1,14 @@
 Param (
     [Parameter(HelpMessage = "Deployment target resource group")] 
-    [string] $ResourceGroupName = "rg-bicep-demo",
+    [string] $ResourceGroupName = "rg-dataverse-audit-exporter-dev",
 
     [Parameter(HelpMessage = "Deployment target resource group location")] 
-    [string] $Location = "North Europe",
+    [string] $Location = "Sweden Central",
 
     [Parameter(HelpMessage = "Bicep parameter file referencing the deployment template")]
     [ValidateScript({
-        if ([System.IO.Path]::GetExtension($_) -ne '.bicepparam' -or -not (Test-Path -LiteralPath $_ -PathType Leaf)) {
-            throw "Specify an existing .bicepparam file."
+        if ([System.IO.Path]::GetExtension($_) -notin @('.bicepparam', '.json') -or -not (Test-Path -LiteralPath $_ -PathType Leaf)) {
+            throw "Specify an existing .bicepparam or ARM parameters JSON file."
         }
         $true
     })]
@@ -20,16 +20,16 @@ $ErrorActionPreference = "Stop"
 $date = (Get-Date).ToString("yyyy-MM-dd-HH-mm-ss")
 $deploymentName = "Local-$date"
 
-if ([string]::IsNullOrEmpty($env:RELEASE_DEFINITIONNAME)) {
+if ($env:GITHUB_ACTIONS -eq 'true') {
+    $deploymentName = "GitHub-$($env:GITHUB_RUN_ID)-$($env:GITHUB_RUN_ATTEMPT)"
+}
+else {
     Write-Host (@"
-Not executing inside Azure DevOps Release Management.
-Make sure you have done "Login-AzAccount" and
+Not executing inside GitHub Actions.
+Make sure you have done "Connect-AzAccount" and
 "Select-AzSubscription -SubscriptionName name"
 so that script continues to work correctly for you.
 "@)
-}
-else {
-    $deploymentName = $env:RELEASE_RELEASENAME
 }
 
 # Target deployment resource group
@@ -38,11 +38,19 @@ if ($null -eq (Get-AzResourceGroup -Name $ResourceGroupName -Location $Location 
     New-AzResourceGroup -Name $ResourceGroupName -Location $Location -Verbose
 }
 
-$result = New-AzResourceGroupDeployment `
-    -DeploymentName $deploymentName `
-    -ResourceGroupName $ResourceGroupName `
-    -TemplateParameterFile $TemplateParameterFile `
-    -Mode Incremental -Force `
-    -Verbose
+$deploymentParameters = @{
+    DeploymentName        = $deploymentName
+    ResourceGroupName      = $ResourceGroupName
+    TemplateParameterFile = $TemplateParameterFile
+    Mode                   = 'Incremental'
+    Force                  = $true
+    Verbose                = $true
+}
+
+if ([System.IO.Path]::GetExtension($TemplateParameterFile) -eq '.json') {
+    $deploymentParameters.TemplateFile = Join-Path $PSScriptRoot 'main.bicep'
+}
+
+$result = New-AzResourceGroupDeployment @deploymentParameters
 
 $result

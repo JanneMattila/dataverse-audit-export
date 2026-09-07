@@ -42,6 +42,17 @@ param intervalSeconds int = 5
 @description('Optional offset-bearing ISO 8601 initial timestamp. Existing durable state takes precedence.')
 param startFrom string = ''
 
+@description('Enable Event Hubs resources and output. Disabling does not delete previously deployed resources in Incremental mode.')
+param enableEventHubOutput bool = true
+
+@description('Enable private Blob container, container-scoped RBAC and Blob output.')
+param enableBlobOutput bool = false
+
+@description('Blob container: 3-63 lowercase letters/digits or single hyphens; start and end with a letter/digit.')
+@minLength(3)
+@maxLength(63)
+param blobContainerName string = 'audits'
+
 @description('Unique, never-reused release tag in dataverse-audit-exporter. Use a locked tag or prefer imageDigest; never latest. Supply exactly one tag/digest for the run stage.')
 @maxLength(128)
 param imageTag string = ''
@@ -77,6 +88,8 @@ var suffix = uniqueString(resourceGroup().id, prefix, environmentName)
 var resourceStem = '${prefix}-${environmentName}-${take(suffix, 8)}'
 var validTableName = contains(lowercaseLetters, toLower(take(stateTableName, 1))) && length(filter(range(0, length(stateTableName)), index => !contains(alphanumeric, toLower(substring(stateTableName, index, 1))))) == 0
 var tableName = validTableName ? stateTableName : fail('stateTableName must start with a letter and contain only letters and digits.')
+var validBlobContainerName = contains(alphanumeric, take(blobContainerName, 1)) && contains(alphanumeric, substring(blobContainerName, length(blobContainerName) - 1, 1)) && !contains(blobContainerName, '--') && length(filter(range(0, length(blobContainerName)), index => !contains('${alphanumeric}-', substring(blobContainerName, index, 1)))) == 0
+var containerName = validBlobContainerName ? blobContainerName : fail('blobContainerName must contain lowercase letters/digits or single hyphens and start and end with a letter/digit.')
 var validTag = !empty(imageTag) && toLower(imageTag) != 'latest' && !contains('.-', take(imageTag, 1)) && length(filter(range(0, length(imageTag)), index => !contains('${alphanumeric}ABCDEFGHIJKLMNOPQRSTUVWXYZ_.-', substring(imageTag, index, 1)))) == 0
 var validDigest = length(imageDigest) == 71 && startsWith(imageDigest, 'sha256:') && length(filter(range(0, length(skip(imageDigest, 7))), index => !contains('0123456789abcdef', substring(skip(imageDigest, 7), index, 1)))) == 0
 var validImageSelection = (validDigest && empty(imageTag)) || (validTag && empty(imageDigest))
@@ -99,10 +112,12 @@ module storage './modules/storage.bicep' = {
     tags: tags
     tableName: tableName
     principalId: identity.properties.principalId
+    enableBlobOutput: enableBlobOutput
+    blobContainerName: containerName
   }
 }
 
-module eventHubs './modules/event-hubs.bicep' = {
+module eventHubs './modules/event-hubs.bicep' = if (enableEventHubOutput) {
   name: 'event-hubs-${resourceStem}'
   params: {
     name: 'eh-${resourceStem}'
@@ -125,7 +140,7 @@ module registry './modules/registry.bicep' = {
   }
 }
 
-var exporterEnvironment = [
+var exporterEnvironment = !deployApplication || enableEventHubOutput || enableBlobOutput ? [
   { name: 'DATAVERSE_EXPORTER_OrganizationName', value: organization }
   { name: 'DATAVERSE_EXPORTER_StorageTableEndpoint', value: storage.outputs.tableEndpoint }
   { name: 'DATAVERSE_EXPORTER_StateTableName', value: tableName }
@@ -133,9 +148,7 @@ var exporterEnvironment = [
   { name: 'DATAVERSE_EXPORTER_IntervalSeconds', value: string(intervalSeconds) }
   { name: 'DATAVERSE_EXPORTER_AuthenticationMode', value: 'ManagedIdentity' }
   { name: 'DATAVERSE_EXPORTER_ManagedIdentityClientId', value: identity.properties.clientId }
-  { name: 'DATAVERSE_EXPORTER_EventHubNamespace', value: eventHubs.outputs.namespaceHost }
-  { name: 'DATAVERSE_EXPORTER_EventHubName', value: eventHubs.outputs.hubName }
-]
+] : fail('Enable at least one output when deployApplication=true.')
 
 module hosting './modules/container-apps.bicep' = {
   name: 'hosting-${resourceStem}'
@@ -149,7 +162,13 @@ module hosting './modules/container-apps.bicep' = {
     identityResourceId: identity.id
     registryServer: registry.outputs.loginServer
     image: deployApplication ? '${registry.outputs.loginServer}/dataverse-audit-exporter${imageVersion}' : ''
-    environmentVariables: concat(exporterEnvironment, empty(startFrom) ? [] : [
+    environmentVariables: concat(exporterEnvironment, enableEventHubOutput ? [
+      { name: 'DATAVERSE_EXPORTER_EventHubNamespace', value: eventHubs!.outputs.namespaceHost }
+      { name: 'DATAVERSE_EXPORTER_EventHubName', value: eventHubs!.outputs.hubName }
+    ] : [], enableBlobOutput ? [
+      { name: 'DATAVERSE_EXPORTER_BlobStorageEndpoint', value: storage.outputs.blobEndpoint }
+      { name: 'DATAVERSE_EXPORTER_BlobContainerName', value: containerName }
+    ] : [], empty(startFrom) ? [] : [
       { name: 'DATAVERSE_EXPORTER_StartFrom', value: startFrom }
     ])
     logRetentionDays: logRetentionDays
@@ -162,9 +181,12 @@ output managedIdentityResourceId string = identity.id
 output storageTableEndpoint string = storage.outputs.tableEndpoint
 output stateTableResourceId string = storage.outputs.tableResourceId
 output stateTableName string = tableName
-output eventHubNamespace string = eventHubs.outputs.namespaceHost
-output eventHubName string = eventHubs.outputs.hubName
-output eventHubResourceId string = eventHubs.outputs.hubResourceId
+output blobStorageEndpoint string = enableBlobOutput ? storage.outputs.blobEndpoint : ''
+output blobContainerName string = enableBlobOutput ? containerName : ''
+output blobContainerResourceId string = storage.outputs.blobContainerResourceId
+output eventHubNamespace string = enableEventHubOutput ? eventHubs!.outputs.namespaceHost : ''
+output eventHubName string = enableEventHubOutput ? eventHubs!.outputs.hubName : ''
+output eventHubResourceId string = enableEventHubOutput ? eventHubs!.outputs.hubResourceId : ''
 output registryName string = registry.outputs.registryName
 output registryLoginServer string = registry.outputs.loginServer
 output registryResourceId string = registry.outputs.registryResourceId

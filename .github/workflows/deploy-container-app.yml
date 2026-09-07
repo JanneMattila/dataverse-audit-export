@@ -1,0 +1,142 @@
+name: Deploy container app
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment and Bicep environment name
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-deployment-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.environment }} container app
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      DATAVERSE_ORGANIZATION_NAME: ${{ vars.DATAVERSE_ORGANIZATION_NAME }}
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+      IMAGE_REPOSITORY: dataverse-audit-exporter
+      PARAMETER_FILE: ${{ github.workspace }}/generated/main.parameters.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Test application
+        run: dotnet test --configuration Release
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Resolve container registry and image tag
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AZURE_RESOURCE_GROUP:?Set AZURE_RESOURCE_GROUP in the GitHub Environment}"
+          : "${AZURE_LOCATION:?Set AZURE_LOCATION in the GitHub Environment}"
+          : "${DATAVERSE_ORGANIZATION_NAME:?Set DATAVERSE_ORGANIZATION_NAME in the GitHub Environment}"
+
+          registries="$(az acr list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query "[?tags.workload=='dataverse-audit-exporter' && tags.environment=='${DEPLOYMENT_ENVIRONMENT}'].{name:name,loginServer:loginServer}" \
+            --output json)"
+
+          if [[ "$(jq length <<< "$registries")" -ne 1 ]]; then
+            echo "Expected exactly one exporter registry for environment '$DEPLOYMENT_ENVIRONMENT'." >&2
+            exit 1
+          fi
+
+          registry_name="$(jq -r '.[0].name' <<< "$registries")"
+          login_server="$(jq -r '.[0].loginServer' <<< "$registries")"
+          tag="${GITHUB_SHA::12}-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+
+          az acr login --name "$registry_name"
+          echo "registry-name=$registry_name" >> "$GITHUB_OUTPUT"
+          echo "login-server=$login_server" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: src/DataverseAuditExporter
+          file: src/DataverseAuditExporter/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image.outputs.login-server }}/${{ env.IMAGE_REPOSITORY }}:${{ steps.image.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Lock image tag
+        shell: bash
+        env:
+          REGISTRY_NAME: ${{ steps.image.outputs.registry-name }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        run: |
+          az acr repository update \
+            --name "$REGISTRY_NAME" \
+            --image "$IMAGE_REPOSITORY:$IMAGE_TAG" \
+            --write-enabled false \
+            --delete-enabled false
+
+      - name: Prepare application parameters
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$PARAMETER_FILE")"
+          az bicep build-params \
+            --file deploy/main.bicepparam \
+            --outfile "$PARAMETER_FILE"
+
+          jq \
+            --arg environment "$DEPLOYMENT_ENVIRONMENT" \
+            --arg organization "$DATAVERSE_ORGANIZATION_NAME" \
+            --arg digest "$IMAGE_DIGEST" '
+              .parameters.environmentName.value = $environment |
+              .parameters.deployApplication.value = true |
+              .parameters.organizationName.value = $organization |
+              .parameters.imageTag.value = "" |
+              .parameters.imageDigest.value = $digest
+            ' "$PARAMETER_FILE" > "$PARAMETER_FILE.tmp"
+          mv "$PARAMETER_FILE.tmp" "$PARAMETER_FILE"
+
+      - name: Deploy container app
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            ./deploy/deploy.ps1 `
+              -ResourceGroupName $env:AZURE_RESOURCE_GROUP `
+              -Location $env:AZURE_LOCATION `
+              -TemplateParameterFile $env:PARAMETER_FILE

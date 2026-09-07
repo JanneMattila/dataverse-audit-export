@@ -1,0 +1,75 @@
+name: Deploy infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: GitHub Environment and Bicep environment name
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: azure-deployment-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.environment }} infrastructure
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+      PARAMETER_FILE: ${{ github.workspace }}/generated/main.parameters.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Prepare infrastructure parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${AZURE_RESOURCE_GROUP:?Set AZURE_RESOURCE_GROUP in the GitHub Environment}"
+          : "${AZURE_LOCATION:?Set AZURE_LOCATION in the GitHub Environment}"
+
+          mkdir -p "$(dirname "$PARAMETER_FILE")"
+          az bicep build-params \
+            --file deploy/main.bicepparam \
+            --outfile "$PARAMETER_FILE"
+
+          jq --arg environment "$DEPLOYMENT_ENVIRONMENT" '
+            .parameters.environmentName.value = $environment |
+            .parameters.deployApplication.value = false |
+            .parameters.organizationName.value = "" |
+            .parameters.imageTag.value = "" |
+            .parameters.imageDigest.value = ""
+          ' "$PARAMETER_FILE" > "$PARAMETER_FILE.tmp"
+          mv "$PARAMETER_FILE.tmp" "$PARAMETER_FILE"
+
+      - name: Deploy infrastructure
+        uses: azure/powershell@v2
+        with:
+          azPSVersion: latest
+          inlineScript: |
+            ./deploy/deploy.ps1 `
+              -ResourceGroupName $env:AZURE_RESOURCE_GROUP `
+              -Location $env:AZURE_LOCATION `
+              -TemplateParameterFile $env:PARAMETER_FILE

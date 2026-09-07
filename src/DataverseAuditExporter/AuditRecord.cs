@@ -4,6 +4,14 @@ namespace DataverseAuditExporter;
 
 public sealed record AuditRecord(Guid Id, DateTimeOffset CreatedOn, string Json)
 {
+    public static AuditRecord Parse(JsonElement value, string organization)
+    {
+        var record = Parse(value);
+        var payload = JsonSerializer.SerializeToNode(value)!.AsObject();
+        payload["organization"] = organization;
+        return record with { Json = payload.ToJsonString() };
+    }
+
     public static AuditRecord Parse(JsonElement value)
     {
         if (!value.TryGetProperty("auditid", out var id) || !Guid.TryParse(id.GetString(), out var auditId) ||

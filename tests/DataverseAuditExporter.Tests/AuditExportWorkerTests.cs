@@ -10,6 +10,93 @@ public sealed class AuditExportWorkerTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OrganizationsRunSequentiallyWithIndependentStateAndOneDelay(bool failFirst)
+    {
+        var table = new InMemoryTableClient();
+        var time = new ManualTimeProvider();
+        var schedulerTime = new RoundTimeProvider();
+        var firstOptions = TableExportStateStoreTests.Options();
+        firstOptions.IntervalSeconds = 10;
+        var secondOptions = TableExportStateStoreTests.Options();
+        secondOptions.OrganizationName = "second-org";
+        secondOptions.Validate();
+        var firstState = new TableExportStateStore(table, firstOptions, time);
+        var secondState = new TableExportStateStore(table, secondOptions, time);
+        var audit = new AuditRecord(Guid.NewGuid(), time.GetUtcNow(), "{}");
+        var firstSource = new ControlledSource { Page = [audit], Failure = failFirst ? new IOException("Injected failure") : null };
+        var secondSource = new ControlledSource { Page = [audit with { CreatedOn = audit.CreatedOn.AddSeconds(1) }] };
+        var firstSink = new RecordingSink();
+        var secondSink = new RecordingSink();
+        OrganizationExportJob[] jobs =
+        [
+            new(firstOptions, firstState, new AuditExportCycle(firstSource, [firstSink], firstState, NullLogger<AuditExportCycle>.Instance)),
+            new(secondOptions, secondState, new AuditExportCycle(secondSource, [secondSink], secondState, NullLogger<AuditExportCycle>.Instance))
+        ];
+        using var worker = new AuditExportWorker(jobs, firstOptions, schedulerTime, NullLogger<AuditExportWorker>.Instance);
+        await worker.StartAsync(default);
+        try
+        {
+            await firstSource.Entered.Task.WaitAsync(Deadline);
+            Assert.Equal(0, secondSource.ReadCount);
+            schedulerTime.Advance(TimeSpan.FromSeconds(2));
+            firstSource.Continue.SetResult();
+            await secondSource.Entered.Task.WaitAsync(Deadline);
+            Assert.Equal("", table.Snapshot(firstOptions.PartitionKey).GetString("Owner"));
+            Assert.Equal(secondOptions.InitialCheckpoint, secondSource.Checkpoint);
+            schedulerTime.Advance(TimeSpan.FromSeconds(1));
+            secondSource.Continue.SetResult();
+            Assert.Equal(TimeSpan.FromSeconds(7), await schedulerTime.Delay.Task.WaitAsync(Deadline));
+            Assert.Equal(1, firstSource.ReadCount);
+            Assert.Equal(1, secondSource.ReadCount);
+            Assert.Equal(failFirst ? firstOptions.InitialCheckpoint : audit.CreatedOn, firstState.Checkpoint);
+            Assert.Equal(audit.CreatedOn.AddSeconds(1), secondState.Checkpoint);
+            Assert.Equal(!failFirst, await firstState.IsDeliveredAsync(firstSink.Id, audit.Id, default));
+            Assert.True(await secondState.IsDeliveredAsync(secondSink.Id, audit.Id, default));
+            Assert.Single(secondSink.Delivered);
+            Assert.Equal("", table.Snapshot(secondOptions.PartitionKey).GetString("Owner"));
+        }
+        finally
+        {
+            await Stop(worker);
+        }
+    }
+
+    private sealed class RoundTimeProvider : TimeProvider
+    {
+        private long timestamp;
+        public TaskCompletionSource<TimeSpan> Delay { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Interlocked.Read(ref timestamp);
+        public void Advance(TimeSpan duration) => Interlocked.Add(ref timestamp, duration.Ticks);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            Delay.TrySetResult(dueTime);
+            return new InertTimer();
+        }
+
+        private sealed class InertTimer : ITimer
+        {
+            public bool Change(TimeSpan dueTime, TimeSpan period) => true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        }
+    }
+
+    [Theory]
+    [InlineData(5, 0, 5)]
+    [InlineData(5, 2.5, 2.5)]
+    [InlineData(5, 4.8, 1)]
+    [InlineData(5, 5, 1)]
+    [InlineData(5, 20, 1)]
+    [InlineData(1, 0.5, 1)]
+    public void RoundDelaySubtractsProcessingTimeWithOneSecondMinimum(int interval, double elapsed, double expected)
+    {
+        Assert.Equal(TimeSpan.FromSeconds(expected), AuditExportWorker.PollingDelay(interval, TimeSpan.FromSeconds(elapsed)));
+    }
+
     [Fact]
     public async Task StartupPollsImmediatelyAndCancellationStopsSourceWithoutCheckpointThenReleases()
     {

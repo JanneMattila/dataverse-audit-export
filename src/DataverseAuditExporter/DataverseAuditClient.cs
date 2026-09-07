@@ -34,7 +34,8 @@ public sealed class DataverseAuditClient(HttpClient http, TokenCredential creden
             using var response = await GetAsync(next, cancellationToken);
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            var records = document.RootElement.GetProperty("value").EnumerateArray().Select(AuditRecord.Parse).ToArray();
+            var records = document.RootElement.GetProperty("value").EnumerateArray()
+                .Select(value => AuditRecord.Parse(value, options.OrganizationUri.Host)).ToArray();
             next = document.RootElement.TryGetProperty("@odata.nextLink", out var link) && !string.IsNullOrWhiteSpace(link.GetString())
                 ? new Uri(options.OrganizationUri, link.GetString()!) : null;
             yield return records;

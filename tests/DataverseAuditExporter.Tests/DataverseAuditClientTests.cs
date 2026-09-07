@@ -27,6 +27,11 @@ public sealed class DataverseAuditClientTests
         Assert.Equal(new[] { 2, 1 }, pages.Select(page => page.Count));
         Assert.Equal(3, pages.SelectMany(page => page).Select(audit => audit.Id).Distinct().Count());
         Assert.All(pages.SelectMany(page => page), audit => Assert.Equal(checkpoint, audit.CreatedOn));
+        Assert.All(pages.SelectMany(page => page), audit =>
+        {
+            using var payload = JsonDocument.Parse(audit.Json);
+            Assert.Equal("example.crm.dynamics.com", payload.RootElement.GetProperty("organization").GetString());
+        });
         var firstQuery = Uri.UnescapeDataString(harness.Handler.Requests[0].Uri.Query);
         Assert.Contains("$orderby=createdon asc", firstQuery);
         Assert.Contains("$filter=createdon ge " + Timestamp, firstQuery);
@@ -88,7 +93,10 @@ public sealed class DataverseAuditClientTests
 
         var audit = Assert.Single(Assert.Single(await ReadAllAsync(harness.Client)));
 
-        Assert.Equal(raw, audit.Json);
+        var payload = System.Text.Json.Nodes.JsonNode.Parse(audit.Json)!.AsObject();
+        Assert.Equal("example.crm.dynamics.com", payload["organization"]!.GetValue<string>());
+        payload.Remove("organization");
+        Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse(raw), payload));
         Assert.Equal(DateTimeOffset.Parse(Timestamp), audit.CreatedOn);
         Assert.Equal(TimeSpan.Zero, audit.CreatedOn.Offset);
         var request = Assert.Single(harness.Handler.Requests);
@@ -98,6 +106,19 @@ public sealed class DataverseAuditClientTests
         Assert.Equal("4.0", request.ODataMaxVersion);
         Assert.Equal("application/json", request.Accept);
         Assert.DoesNotContain("$filter", request.Uri.Query);
+    }
+
+    [Fact]
+    public async Task ConfiguredHostnameReplacesOrganizationReturnedBySource()
+    {
+        var raw = $$"""{"auditid":"{{FirstId}}","createdon":"{{Timestamp}}","organization":"untrusted.example"}""";
+        using var harness = new ClientHarness(JsonResponse(Page([raw])));
+
+        var audit = Assert.Single(Assert.Single(await ReadAllAsync(harness.Client)));
+
+        using var payload = JsonDocument.Parse(audit.Json);
+        Assert.Equal("example.crm.dynamics.com", payload.RootElement.GetProperty("organization").GetString());
+        Assert.Single(payload.RootElement.EnumerateObject(), property => property.Name == "organization");
     }
 
     [Fact]

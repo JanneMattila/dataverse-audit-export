@@ -11,6 +11,7 @@ public sealed class TableExportStateStore(TableClient table, ExporterOptions opt
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly string owner = Guid.NewGuid().ToString("N");
+    private readonly Dictionary<string, (DateTimeOffset CreatedOn, HashSet<Guid> AuditIds)> deliveries = [];
     private TableEntity? current;
     public DateTimeOffset? Checkpoint { get; private set; }
 
@@ -98,18 +99,25 @@ public sealed class TableExportStateStore(TableClient table, ExporterOptions opt
         finally { gate.Release(); }
     }
 
-    public async Task<bool> IsDeliveredAsync(string sinkId, Guid auditId, CancellationToken cancellationToken)
+    public Task<bool> IsDeliveredAsync(string sinkId, Guid auditId, CancellationToken cancellationToken)
     {
-        var response = await table.GetEntityIfExistsAsync<TableEntity>(options.PartitionKey, $"{sinkId}-{auditId:D}", cancellationToken: cancellationToken);
-        return response.HasValue;
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (deliveries)
+            return Task.FromResult(deliveries.TryGetValue(sinkId, out var boundary) && boundary.AuditIds.Contains(auditId));
     }
 
-    public Task MarkDeliveredAsync(string sinkId, AuditRecord audit, CancellationToken cancellationToken) =>
-        table.UpsertEntityAsync(new TableEntity(options.PartitionKey, $"{sinkId}-{audit.Id:D}")
+    public Task MarkDeliveredAsync(string sinkId, AuditRecord audit, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        lock (deliveries)
         {
-            ["CreatedOn"] = Format(audit.CreatedOn),
-            ["DeliveredOn"] = Format(time.GetUtcNow())
-        }, TableUpdateMode.Replace, cancellationToken);
+            if (!deliveries.TryGetValue(sinkId, out var boundary) || audit.CreatedOn > boundary.CreatedOn)
+                deliveries[sinkId] = (audit.CreatedOn, [audit.Id]);
+            else if (audit.CreatedOn == boundary.CreatedOn)
+                boundary.AuditIds.Add(audit.Id);
+        }
+        return Task.CompletedTask;
+    }
 
     private void Validate(TableEntity entity)
     {

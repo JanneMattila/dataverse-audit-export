@@ -166,7 +166,7 @@ public sealed class TableExportStateStoreTests
     }
 
     [Fact]
-    public async Task EqualTimestampsRoundTripAsSevenDigitStringsAcrossRestartAndReceipts()
+    public async Task CheckpointSurvivesRestartButDuplicateIdsRemainOnlyInMemory()
     {
         var table = new InMemoryTableClient();
         var time = new ManualTimeProvider();
@@ -189,9 +189,8 @@ public sealed class TableExportStateStoreTests
         Assert.Equal(time.GetUtcNow().AddSeconds(60).ToString("O"), Assert.IsType<string>(stored["LeaseExpires"]));
         foreach (var audit in new[] { first, second })
         {
-            var receipt = table.Snapshot(options.PartitionKey, $"events-{audit.Id:D}");
-            Assert.Equal(time.GetUtcNow().ToString("O"), Assert.IsType<string>(receipt["CreatedOn"]));
-            Assert.Equal(time.GetUtcNow().ToString("O"), Assert.IsType<string>(receipt["DeliveredOn"]));
+            Assert.True(await owner.IsDeliveredAsync("events", audit.Id, default));
+            Assert.False((await table.GetEntityIfExistsAsync<TableEntity>(options.PartitionKey, $"events-{audit.Id:D}")).HasValue);
         }
         await owner.ReleaseAsync(default);
         options.StartFrom = "2026-09-08T00:00:00Z";
@@ -199,8 +198,8 @@ public sealed class TableExportStateStoreTests
         var restarted = Store(table, options, time);
         Assert.True(await restarted.TryAcquireAsync(default));
         Assert.Equal(checkpoint, restarted.Checkpoint);
-        Assert.True(await restarted.IsDeliveredAsync("events", first.Id, default));
-        Assert.True(await restarted.IsDeliveredAsync("events", second.Id, default));
+        Assert.False(await restarted.IsDeliveredAsync("events", first.Id, default));
+        Assert.False(await restarted.IsDeliveredAsync("events", second.Id, default));
     }
 
     [Fact]
@@ -407,7 +406,7 @@ public sealed class TableExportStateStoreTests
     [Theory]
     [InlineData("read")]
     [InlineData("upsert")]
-    public async Task TransientReceiptFailureIsNotReportedAsDelivered(string operation)
+    public async Task DuplicateTrackingDoesNotUseTableReadsOrUpserts(string operation)
     {
         var table = new InMemoryTableClient();
         var time = new ManualTimeProvider();
@@ -415,18 +414,21 @@ public sealed class TableExportStateStoreTests
         var audit = new AuditRecord(Guid.NewGuid(), time.GetUtcNow(), "{}");
         table.Failure = (attempt, _) => attempt == operation ? new RequestFailedException(503, "Injected failure") : null;
 
-        await Assert.ThrowsAsync<RequestFailedException>(async () =>
-        {
-            if (operation == "read")
-                await owner.IsDeliveredAsync("events", audit.Id, default);
-            else
-                await owner.MarkDeliveredAsync("events", audit, default);
-        });
-
-        table.Failure = null;
         Assert.False(await owner.IsDeliveredAsync("events", audit.Id, default));
         await owner.MarkDeliveredAsync("events", audit, default);
         Assert.True(await owner.IsDeliveredAsync("events", audit.Id, default));
+    }
+
+    [Fact]
+    public async Task HistoricalTableReceiptsAreIgnored()
+    {
+        var table = new InMemoryTableClient();
+        var time = new ManualTimeProvider();
+        var options = Options();
+        var auditId = Guid.NewGuid();
+        table.Seed(new TableEntity(options.PartitionKey, $"events-{auditId:D}"));
+
+        Assert.False(await Store(table, options, time).IsDeliveredAsync("events", auditId, default));
     }
 
     [Fact]

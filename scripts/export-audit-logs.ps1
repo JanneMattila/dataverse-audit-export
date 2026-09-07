@@ -139,9 +139,9 @@ if ($missingSettings.Count -gt 0) {
 }
 
 $organizationUrl = Get-OrganizationUrl -Name $OrganizationName
+$organizationHost = ([uri] $organizationUrl).Host
 $resolvedExportPath = [System.IO.Path]::GetFullPath($ExportPath)
 $resolvedStatePath = [System.IO.Path]::GetFullPath($StatePath)
-$auditIdIndexPath = [System.IO.Path]::ChangeExtension($resolvedStatePath, "auditids.txt")
 [System.IO.Directory]::CreateDirectory($resolvedExportPath) | Out-Null
 [System.IO.Directory]::CreateDirectory((Split-Path -Parent $resolvedStatePath)) | Out-Null
 
@@ -168,13 +168,7 @@ elseif ($null -ne $state -and $state.lastSuccessfulCreatedOnUtc) {
 }
 
 $seenAuditIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-if (Test-Path -LiteralPath $auditIdIndexPath -PathType Leaf) {
-	foreach ($auditId in Get-Content -LiteralPath $auditIdIndexPath) {
-		if (-not [string]::IsNullOrWhiteSpace($auditId)) {
-			[void] $seenAuditIds.Add($auditId.Trim())
-		}
-	}
-}
+$latestDeliveredOn = $null
 
 $token = $null
 $tokenExpiresAt = [datetimeoffset]::MinValue
@@ -233,11 +227,17 @@ function Export-AuditRecord {
 
 	if (-not (Test-Path -LiteralPath $auditPath -PathType Leaf)) {
 		[System.IO.Directory]::CreateDirectory($partitionPath) | Out-Null
+		$Audit | Add-Member -MemberType NoteProperty -Name organization -Value $organizationHost -Force
 		Write-JsonAtomically -Path $auditPath -Value $Audit
 	}
 
-	[void] $seenAuditIds.Add($auditId)
-	[System.IO.File]::AppendAllText($auditIdIndexPath, "$auditId$([Environment]::NewLine)", [System.Text.UTF8Encoding]::new($false))
+	if ($null -eq $script:latestDeliveredOn -or $createdOn -gt $script:latestDeliveredOn) {
+		$seenAuditIds.Clear()
+		$script:latestDeliveredOn = $createdOn
+	}
+	if ($createdOn -eq $script:latestDeliveredOn) {
+		[void] $seenAuditIds.Add($auditId)
+	}
 	return $true
 }
 

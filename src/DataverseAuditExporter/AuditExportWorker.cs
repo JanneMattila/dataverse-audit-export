@@ -3,52 +3,65 @@ using Microsoft.Extensions.Logging;
 
 namespace DataverseAuditExporter;
 
-public sealed class AuditExportWorker(TableExportStateStore state, AuditExportCycle cycle, ExporterOptions options,
-    ILogger<AuditExportWorker> logger) : BackgroundService
+public sealed record OrganizationExportJob(ExporterOptions Options, TableExportStateStore State, AuditExportCycle Cycle);
+
+public sealed class AuditExportWorker(IReadOnlyList<OrganizationExportJob> organizations, ExporterOptions options,
+    TimeProvider time, ILogger<AuditExportWorker> logger) : BackgroundService
 {
+    public AuditExportWorker(TableExportStateStore state, AuditExportCycle cycle, ExporterOptions options,
+        ILogger<AuditExportWorker> logger) : this([new(options, state, cycle)], options, TimeProvider.System, logger) { }
+
+    internal static TimeSpan PollingDelay(int intervalSeconds, TimeSpan elapsed) =>
+        TimeSpan.FromSeconds(Math.Max(1, intervalSeconds - elapsed.TotalSeconds));
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                try
+                var started = time.GetTimestamp();
+                foreach (var organization in organizations)
                 {
-                    if (await state.TryAcquireAsync(stoppingToken))
-                        await RunOwnedAsync(stoppingToken);
-                    else
-                        logger.LogInformation("Another instance owns StateId {StateId}; waiting.", options.StateId);
+                    stoppingToken.ThrowIfCancellationRequested();
+                    using var scope = logger.BeginScope("Organization {Organization}", organization.Options.OrganizationUri.Host);
+                    try
+                    {
+                        if (await organization.State.TryAcquireAsync(stoppingToken))
+                            await RunOwnedAsync(organization, stoppingToken);
+                        else
+                            logger.LogInformation("Another instance owns StateId {StateId} for {Organization}; skipping this round.",
+                                organization.Options.StateId, organization.Options.OrganizationUri.Host);
+                    }
+                    catch (StateConfigurationException)
+                    {
+                        Environment.ExitCode = 1;
+                        throw;
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { throw; }
+                    catch (Exception exception)
+                    {
+                        logger.LogWarning("Audit export failed; durable checkpoint retained for {Organization}. {Error}",
+                            organization.Options.OrganizationUri.Host, exception.Message);
+                    }
                 }
-                catch (StateConfigurationException)
-                {
-                    Environment.ExitCode = 1;
-                    throw;
-                }
-                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-                catch (Exception exception)
-                {
-                    logger.LogWarning("Audit export failed; durable checkpoint retained. {Error}", exception.Message);
-                }
-                await Task.Delay(TimeSpan.FromSeconds(options.IntervalSeconds), stoppingToken);
+                await Task.Delay(PollingDelay(options.IntervalSeconds, time.GetElapsedTime(started)), time, stoppingToken);
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }
     }
 
-    private async Task RunOwnedAsync(CancellationToken stoppingToken)
+    private async Task RunOwnedAsync(OrganizationExportJob organization, CancellationToken stoppingToken)
     {
+        var state = organization.State;
         using var ownership = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         using var renewalStop = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         ownership.CancelAfter(TimeSpan.FromSeconds(45));
-        var renewal = RenewAsync(ownership, renewalStop.Token);
+        var renewal = RenewAsync(state, ownership, renewalStop.Token);
         try
         {
             logger.LogInformation("Acquired export ownership at {Checkpoint}. StartFrom only initializes fresh state.", state.Checkpoint);
-            while (!ownership.IsCancellationRequested)
-            {
-                await cycle.RunAsync(state.Checkpoint, ownership.Token);
-                await Task.Delay(TimeSpan.FromSeconds(options.IntervalSeconds), ownership.Token);
-            }
+            await organization.Cycle.RunAsync(state.Checkpoint, ownership.Token);
         }
         finally
         {
@@ -61,7 +74,7 @@ public sealed class AuditExportWorker(TableExportStateStore state, AuditExportCy
         }
     }
 
-    private async Task RenewAsync(CancellationTokenSource ownership, CancellationToken stoppingToken)
+    private async Task RenewAsync(TableExportStateStore state, CancellationTokenSource ownership, CancellationToken stoppingToken)
     {
         try
         {
