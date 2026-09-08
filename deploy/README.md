@@ -93,9 +93,9 @@ The two manual workflows use GitHub OIDC and GitHub Environments named `dev`, `t
 | Secret | `AZURE_CLIENT_ID` | Deployment identity application/client ID |
 | Secret | `AZURE_TENANT_ID` | Microsoft Entra tenant ID |
 | Secret | `AZURE_SUBSCRIPTION_ID` | Target Azure subscription ID |
-| Variable | `AZURE_RESOURCE_GROUP` | Stable target resource group for that environment |
-| Variable | `AZURE_LOCATION` | Resource group and deployment location |
-| Variable | `DATAVERSE_ORGANIZATION_NAME` | Actual organization hostname/HTTPS origin or comma-separated list; required by the app workflow |
+| Secret | `AZURE_RESOURCE_GROUP` | Stable target resource group for that environment |
+| Secret | `AZURE_LOCATION` | Resource group and deployment location |
+| Secret | `DATAVERSE_ORGANIZATION_NAME` | Actual organization hostname/HTTPS origin or comma-separated list; required by the app workflow |
 
 The deployment identity needs the resource-group permissions described above. The app workflow also needs `AcrPush` on the registry created by the infrastructure workflow. Keep environment approval rules enabled where deployment requires review.
 
