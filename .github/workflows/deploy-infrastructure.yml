@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5.0.0
 
       - name: Sign in to Azure
         uses: azure/login@v2
