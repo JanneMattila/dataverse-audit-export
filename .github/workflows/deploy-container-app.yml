@@ -26,9 +26,9 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     env:
-      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
-      DATAVERSE_ORGANIZATION_NAME: ${{ vars.DATAVERSE_ORGANIZATION_NAME }}
+      AZURE_RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ secrets.AZURE_LOCATION }}
+      DATAVERSE_ORGANIZATION_NAME: ${{ secrets.DATAVERSE_ORGANIZATION_NAME }}
       DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
       DEPLOY_APPLICATION: 'true'
       IMAGE_REPOSITORY: dataverse-audit-exporter
