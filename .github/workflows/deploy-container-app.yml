@@ -30,8 +30,8 @@ jobs:
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       DATAVERSE_ORGANIZATION_NAME: ${{ vars.DATAVERSE_ORGANIZATION_NAME }}
       DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+      DEPLOY_APPLICATION: 'true'
       IMAGE_REPOSITORY: dataverse-audit-exporter
-      PARAMETER_FILE: ${{ github.workspace }}/generated/main.parameters.json
 
     steps:
       - name: Check out repository
@@ -85,7 +85,6 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push image
-        id: build
         uses: docker/build-push-action@v6
         with:
           context: src/DataverseAuditExporter
@@ -108,35 +107,13 @@ jobs:
             --write-enabled false \
             --delete-enabled false
 
-      - name: Prepare application parameters
-        shell: bash
-        env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$(dirname "$PARAMETER_FILE")"
-          az bicep build-params \
-            --file deploy/main.bicepparam \
-            --outfile "$PARAMETER_FILE"
-
-          jq \
-            --arg environment "$DEPLOYMENT_ENVIRONMENT" \
-            --arg organization "$DATAVERSE_ORGANIZATION_NAME" \
-            --arg digest "$IMAGE_DIGEST" '
-              .parameters.environmentName.value = $environment |
-              .parameters.deployApplication.value = true |
-              .parameters.organizationName.value = $organization |
-              .parameters.imageTag.value = "" |
-              .parameters.imageDigest.value = $digest
-            ' "$PARAMETER_FILE" > "$PARAMETER_FILE.tmp"
-          mv "$PARAMETER_FILE.tmp" "$PARAMETER_FILE"
-
       - name: Deploy container app
         uses: azure/powershell@v2
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
         with:
           azPSVersion: latest
           inlineScript: |
             ./deploy/deploy.ps1 `
               -ResourceGroupName $env:AZURE_RESOURCE_GROUP `
-              -Location $env:AZURE_LOCATION `
-              -TemplateParameterFile $env:PARAMETER_FILE
+              -Location $env:AZURE_LOCATION

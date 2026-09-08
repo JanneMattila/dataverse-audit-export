@@ -19,7 +19,7 @@ public sealed class BlobOptionsTests
         var options = Options();
         options.Validate();
         var original = options.Organizations.Single();
-        options.OrganizationName = "[\"second\",\"contoso\"]";
+        options.OrganizationName = "second,contoso";
         options.Validate();
         var matching = options.Organizations[1];
         Assert.Null(matching.ExportPath);

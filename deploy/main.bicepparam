@@ -1,11 +1,10 @@
 using './main.bicep'
 
 param resourcePrefix = 'dvaudit'
-param environmentName = 'dev'
-param deployApplication = false
-param organizationName = ''
-param imageTag = ''
-param imageDigest = ''
+param environmentName = readEnvironmentVariable('DEPLOYMENT_ENVIRONMENT', 'dev')
+param deployApplication = bool(readEnvironmentVariable('DEPLOY_APPLICATION', 'false'))
+param organizationName = readEnvironmentVariable('DATAVERSE_ORGANIZATION_NAME', '')
+param imageTag = readEnvironmentVariable('IMAGE_TAG', '')
 param stateTableName = 'DataverseAuditExporter'
 param stateId = 'default'
 param intervalSeconds = 5

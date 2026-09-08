@@ -18,26 +18,28 @@ public sealed class ApplicationConfigurationTests
         "--EventHubName", "audits"
     ];
 
-    [Fact]
-    public void OrganizationArrayInEnvironmentAndCliPreservesOrderAndPrecedence()
+    [Theory]
+    [InlineData("contoso.crm4.dynamics.com,fabrikam.crm4.dynamics.com")]
+    [InlineData(" contoso.crm4.dynamics.com, https://fabrikam.crm4.dynamics.com/ ")]
+    public void OrganizationListInEnvironmentAndCliPreservesOrderAndPrecedence(string organizations)
     {
         using var environment = new ConfigurationEnvironment();
-        environment.Set("OrganizationName", "[\"contoso.crm4.dynamics.com\",\"fabrikam.crm4.dynamics.com\"]");
+        environment.Set("OrganizationName", organizations);
         var options = ApplicationConfiguration.Load(Required[2..]);
         Assert.Equal(new[] { "contoso.crm4.dynamics.com", "fabrikam.crm4.dynamics.com" },
             options.Organizations.Select(organization => organization.OrganizationUri.Host));
         Assert.Equal(2, options.Organizations.Select(organization => organization.PartitionKey).Distinct().Count());
         Assert.Single(ApplicationConfiguration.Load(Required).Organizations);
-        var overridden = ApplicationConfiguration.Load([.. Required, "--OrganizationName", "[\"third\",\"fourth\"]"]);
+        var overridden = ApplicationConfiguration.Load([.. Required, "--OrganizationName", "third.crm.dynamics.com, fourth.crm.dynamics.com"]);
         Assert.Equal(new[] { "third.crm.dynamics.com", "fourth.crm.dynamics.com" },
             overridden.Organizations.Select(organization => organization.OrganizationUri.Host));
     }
 
     [Fact]
-    public void JsonSettingsSupportNativeOrganizationArrayAndScalarOverride()
+    public void JsonSettingsSupportCommaSeparatedOrganizationsAndScalarOverride()
     {
         const string json = """
-            {"OrganizationName":["contoso","fabrikam"],"StorageTableEndpoint":"https://test.table.core.windows.net","ExportPath":"exports"}
+            {"OrganizationName":"contoso,fabrikam","StorageTableEndpoint":"https://test.table.core.windows.net","ExportPath":"exports"}
             """;
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
         var builder = new ConfigurationBuilder().AddJsonStream(stream);
@@ -54,22 +56,44 @@ public sealed class ApplicationConfigurationTests
 
     [Theory]
     [InlineData("[]")]
+    [InlineData("[\"contoso\"]")]
+    [InlineData("[\"contoso\",\"fabrikam\"]")]
+    public void NonStringOrganizationSettingsAreRejected(string value)
+    {
+        var json = $$"""
+            {"OrganizationName":{{value}},"StorageTableEndpoint":"https://test.table.core.windows.net","ExportPath":"exports"}
+            """;
+        using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+        var configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
+        Assert.Throws<ArgumentException>(() => ApplicationConfiguration.Load(configuration));
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("[\"contoso\"]")]
+    [InlineData("[\"contoso.crm4.dynamics.com\",\"fabrikam.crm4.dynamics.com\"]")]
     [InlineData("[null]")]
     [InlineData("[\"\"]")]
     [InlineData("[123]")]
     [InlineData("[\"contoso\",")]
     [InlineData("[\"contoso\",\"https://contoso.crm.dynamics.com/\"]")]
     [InlineData("[\"contoso\",\"http://invalid\"]")]
-    public void InvalidOrganizationArraysAreRejected(string organizations)
+    [InlineData(",contoso.crm4.dynamics.com")]
+    [InlineData("contoso.crm4.dynamics.com,")]
+    [InlineData("contoso.crm4.dynamics.com, ,fabrikam.crm4.dynamics.com")]
+    [InlineData("contoso.crm4.dynamics.com,https://contoso.crm4.dynamics.com/")]
+    [InlineData("contoso.crm4.dynamics.com,http://invalid")]
+    public void InvalidOrganizationListsAreRejected(string organizations)
     {
         using var environment = new ConfigurationEnvironment();
         Assert.Throws<ArgumentException>(() => ApplicationConfiguration.Load([.. Required, "--OrganizationName", organizations]));
     }
 
     [Theory]
-    [InlineData("[\"config-test\"]")]
-    [InlineData("[\"config-test\",\"second\"]")]
-    [InlineData("[\"second\",\"config-test\"]")]
+    [InlineData("config-test")]
+    [InlineData("config-test,second")]
+    [InlineData("second,config-test")]
+    [InlineData("config-test.crm.dynamics.com, second.crm4.dynamics.com")]
     public void OrganizationCountAndOrderDoNotChangeStateOrOutputPath(string organizations)
     {
         using var environment = new ConfigurationEnvironment();

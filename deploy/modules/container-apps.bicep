@@ -107,8 +107,8 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployApplication) {
           image: image
           env: environmentVariables
           resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
+            cpu: json('0.25')
+            memory: '0.5Gi'
           }
         }
       ]

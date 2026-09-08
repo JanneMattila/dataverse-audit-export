@@ -29,7 +29,7 @@ jobs:
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
-      PARAMETER_FILE: ${{ github.workspace }}/generated/main.parameters.json
+      DEPLOY_APPLICATION: 'false'
 
     steps:
       - name: Check out repository
@@ -43,27 +43,6 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           enable-AzPSSession: true
 
-      - name: Prepare infrastructure parameters
-        shell: bash
-        run: |
-          set -euo pipefail
-          : "${AZURE_RESOURCE_GROUP:?Set AZURE_RESOURCE_GROUP in the GitHub Environment}"
-          : "${AZURE_LOCATION:?Set AZURE_LOCATION in the GitHub Environment}"
-
-          mkdir -p "$(dirname "$PARAMETER_FILE")"
-          az bicep build-params \
-            --file deploy/main.bicepparam \
-            --outfile "$PARAMETER_FILE"
-
-          jq --arg environment "$DEPLOYMENT_ENVIRONMENT" '
-            .parameters.environmentName.value = $environment |
-            .parameters.deployApplication.value = false |
-            .parameters.organizationName.value = "" |
-            .parameters.imageTag.value = "" |
-            .parameters.imageDigest.value = ""
-          ' "$PARAMETER_FILE" > "$PARAMETER_FILE.tmp"
-          mv "$PARAMETER_FILE.tmp" "$PARAMETER_FILE"
-
       - name: Deploy infrastructure
         uses: azure/powershell@v2
         with:
@@ -71,5 +50,4 @@ jobs:
           inlineScript: |
             ./deploy/deploy.ps1 `
               -ResourceGroupName $env:AZURE_RESOURCE_GROUP `
-              -Location $env:AZURE_LOCATION `
-              -TemplateParameterFile $env:PARAMETER_FILE
+              -Location $env:AZURE_LOCATION

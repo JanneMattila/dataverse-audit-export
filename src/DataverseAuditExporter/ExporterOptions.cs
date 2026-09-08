@@ -37,17 +37,7 @@ public sealed class ExporterOptions
 
     public void Validate()
     {
-        string[] names;
-        try
-        {
-            names = OrganizationName?.TrimStart().StartsWith('[') == true
-                ? JsonSerializer.Deserialize<string[]>(OrganizationName) ?? []
-                : [OrganizationName!];
-        }
-        catch (JsonException)
-        {
-            throw new ArgumentException("OrganizationName must be a single organization or a JSON array of organization strings.");
-        }
+        var names = OrganizationName?.Split(',', StringSplitOptions.TrimEntries) ?? [];
         if (names.Length == 0 || names.Any(string.IsNullOrWhiteSpace))
             throw new ArgumentException("OrganizationName is required and must not contain empty organizations.");
 

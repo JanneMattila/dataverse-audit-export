@@ -25,12 +25,12 @@ Start with [main.bicepparam](main.bicepparam). Keep the resource group, `resourc
 | Parameter | Default / constraints |
 | --- | --- |
 | `resourcePrefix` | `dvaudit`; 2-8 lowercase letters/digits |
-| `environmentName` | `dev`; `dev`, `test`, `prod` |
+| `environmentName` | Read from `DEPLOYMENT_ENVIRONMENT`; defaults to `dev`; allowed: `dev`, `test`, `prod` |
 | `location` | Existing resource group's location; select a supported region before bootstrap |
 | `tags` | Workload and environment tags; non-secret values only |
-| `deployApplication` | `false`; creates backing resources, identity, registry, environment and logging without an app |
-| `organizationName` | Empty during bootstrap; required for run. One organization, or a string containing a JSON array of organizations |
-| `imageTag` / `imageDigest` | Empty during bootstrap; run requires exactly one. Tag must be valid, unique, locked and never reused; `latest` is rejected. Prefer `sha256:` plus 64 lowercase hex characters |
+| `deployApplication` | Read from `DEPLOY_APPLICATION` (`true` or `false`); defaults to `false`, creating backing resources, identity, registry, environment and logging without an app |
+| `organizationName` | Read from `DATAVERSE_ORGANIZATION_NAME` by the parameter file. Empty during bootstrap; required for run. One hostname/HTTPS origin or a comma-separated list |
+| `imageTag` | Read from `IMAGE_TAG`; defaults to empty during bootstrap; required for run. Tag must be valid, unique, locked and never reused; `latest` is rejected |
 | `stateTableName` | `DataverseAuditExporter`; 3-63 alphanumeric characters starting with a letter |
 | `stateId` | `default`; 1-128 characters, not whitespace; preserve for resume |
 | `intervalSeconds` | `5`; 1-86400. Full-round target interval; processing time is subtracted, with at least 1 second of sleep |
@@ -43,7 +43,9 @@ Start with [main.bicepparam](main.bicepparam). Keep the resource group, `resourc
 | `eventHubRetentionDays` | `1`; 1-7 |
 | `logRetentionDays` | `30`; 30, 60, 90, 120, 180, 270, 365, 550 or 730 |
 
-Bicep decorators validate ranges and allowed values; template expressions reject invalid naming and missing run-stage inputs during ARM evaluation. Compilation alone does not evaluate all deployment-time expressions or confirm image existence. Dataverse URL and timestamp semantics remain application validation responsibilities. Registry host and repository are not caller-controlled: images must be in the new registry's `dataverse-audit-exporter` repository. Bicep cannot prove that a tag is immutable; lock it before use or use a digest.
+Bicep decorators validate ranges and allowed values; template expressions reject invalid naming and missing run-stage inputs during ARM evaluation. Compilation alone does not evaluate all deployment-time expressions or confirm image existence. Dataverse URL and timestamp semantics remain application validation responsibilities. Registry host and repository are not caller-controlled: images must be in the new registry's `dataverse-audit-exporter` repository. Bicep cannot prove that a tag is immutable; lock it before use.
+
+The parameter file reads environment variables from the compiling process. Set them in the same shell that runs the deployment. No parameter-file edits are needed to select the environment, deployment stage, organization or image tag.
 
 For Blob-only deployment, set `enableBlobOutput=true` and `enableEventHubOutput=false` in the parameter file before bootstrap. Set both true for both outputs. At least one must be enabled for the run stage. Blob output uses the storage account's HTTPS Blob endpoint and a private container, not a filesystem mount. Outputs `blobStorageEndpoint`, `blobContainerName` and `blobContainerResourceId` identify it. Event Hubs outputs are empty when disabled.
 
@@ -93,11 +95,11 @@ The two manual workflows use GitHub OIDC and GitHub Environments named `dev`, `t
 | Secret | `AZURE_SUBSCRIPTION_ID` | Target Azure subscription ID |
 | Variable | `AZURE_RESOURCE_GROUP` | Stable target resource group for that environment |
 | Variable | `AZURE_LOCATION` | Resource group and deployment location |
-| Variable | `DATAVERSE_ORGANIZATION_NAME` | Organization hostname, short name, HTTPS origin, or JSON array string; required by the app workflow |
+| Variable | `DATAVERSE_ORGANIZATION_NAME` | Actual organization hostname/HTTPS origin or comma-separated list; required by the app workflow |
 
 The deployment identity needs the resource-group permissions described above. The app workflow also needs `AcrPush` on the registry created by the infrastructure workflow. Keep environment approval rules enabled where deployment requires review.
 
-Run **Deploy infrastructure** first. It forces `deployApplication=false` while preserving the other settings in `main.bicepparam`. After Dataverse application-user onboarding and registry push access are complete, run **Deploy container app**. It tests the application, publishes a unique commit/run tag, disables writes and deletion for that tag, and deploys the resulting digest with `deployApplication=true`. Both workflows serialize deployments to the same environment.
+Run **Deploy infrastructure** first. It sets `DEPLOY_APPLICATION=false` while preserving the other settings in `main.bicepparam`. After Dataverse application-user onboarding and registry push access are complete, run **Deploy container app**. It tests the application, publishes a unique commit/run tag, disables writes and deletion for that tag, and deploys it via `IMAGE_TAG` with `DEPLOY_APPLICATION=true`. Both workflows set `DEPLOYMENT_ENVIRONMENT` from the selected GitHub Environment and use the checked-in parameter file directly, without generating or rewriting parameter files. Both workflows serialize deployments to the same environment.
 
 ## 1. Bootstrap (later, with approval)
 
@@ -117,9 +119,11 @@ Use an existing selected resource group. Only if creating a new group is separat
 az group create --name $resourceGroup --location $location
 ```
 
-Leave `deployApplication=false` and image/organization empty in the parameter file. Compile it, then review server-side validation and what-if before creation:
+Select the environment and bootstrap stage in the shell. Then review server-side validation and what-if before creation:
 
 ```powershell
+$env:DEPLOYMENT_ENVIRONMENT = 'dev'
+$env:DEPLOY_APPLICATION = 'false'
 az deployment group validate --resource-group $resourceGroup --parameters deploy/main.bicepparam
 az deployment group what-if --resource-group $resourceGroup --parameters deploy/main.bicepparam
 az deployment group create --name audit-bootstrap --resource-group $resourceGroup --mode Incremental --parameters deploy/main.bicepparam
@@ -148,10 +152,9 @@ docker build -t $image src/DataverseAuditExporter
 az acr login --name $registryName
 docker push $image
 az acr repository update --name $registryName --image "dataverse-audit-exporter:${tag}" --write-enabled false --delete-enabled false
-$digest = az acr repository show --name $registryName --image "dataverse-audit-exporter:${tag}" --query digest -o tsv
 ```
 
-The build command is `docker build -t REGISTRY/dataverse-audit-exporter:TAG src/DataverseAuditExporter`, with project-directory context, never scripts or existing exports. The tag-lock operation requires appropriate registry permissions; treat failure as a stop condition. Prefer the returned digest for run-stage pinning. Keep prior release digests for rollback; never overwrite a release tag. Image pull failures may reflect RBAC propagation: wait and retry the deployment/pull after permissions propagate, not by enabling admin credentials.
+The build command is `docker build -t REGISTRY/dataverse-audit-exporter:TAG src/DataverseAuditExporter`, with project-directory context, never scripts or existing exports. The tag-lock operation requires appropriate registry permissions; treat failure as a stop condition. Keep prior locked release tags and their images for rollback; never overwrite a release tag. Image pull failures may reflect RBAC propagation: wait and retry the deployment/pull after permissions propagate, not by enabling admin credentials.
 
 ## 3. Onboard the Dataverse identity
 
@@ -196,13 +199,19 @@ Microsoft references: [create a security role](https://learn.microsoft.com/en-us
 
 ## 4. Run and update
 
-Edit [main.bicepparam](main.bicepparam): set `deployApplication=true`, supply the actual `organizationName`, set `imageDigest` to the published `$digest` (or `imageTag` to the locked release tag), and leave the other image selector empty. Keep all resource naming and checkpoint/destination settings unchanged. Optionally set `startFrom` before the first run; absent means all available audit history.
+Set `DEPLOY_APPLICATION=true`, `IMAGE_TAG` to the published, locked release tag, and `DATAVERSE_ORGANIZATION_NAME` in the shell running the deployment. Keep `DEPLOYMENT_ENVIRONMENT` identical to bootstrap. The parameter file reads these values at compilation time. Keep all resource naming and checkpoint/destination settings unchanged. Optionally set `startFrom` in [main.bicepparam](main.bicepparam) before the first run; absent means all available audit history.
 
-For multiple organizations in one container, the existing string parameter can carry a JSON array:
+For one organization, set its actual hostname or HTTPS origin. For multiple organizations in one container, use a comma-separated list:
 
-```bicep
-param organizationName = '["contoso.crm4.dynamics.com","fabrikam.crm4.dynamics.com"]'
+```powershell
+$env:DEPLOYMENT_ENVIRONMENT = 'dev'
+$env:DEPLOY_APPLICATION = 'true'
+$env:IMAGE_TAG = $tag
+$env:DATAVERSE_ORGANIZATION_NAME = 'contoso.crm4.dynamics.com,fabrikam.crm4.dynamics.com'
+./deploy/deploy.ps1
 ```
+
+Run this from the repository root, or use `./deploy.ps1` from the `deploy` directory. Use your actual environment hostnames, not the example values. Bicep passes this value to the container as `DATAVERSE_EXPORTER_OrganizationName`. For direct local or Docker execution, set `DATAVERSE_EXPORTER_OrganizationName` instead. An unset deployment variable defaults to empty for bootstrap and is rejected when `deployApplication=true`. Short names still default to `crm.dynamics.com` for compatibility.
 
 Grant the runtime identity Dataverse application-user access in every listed environment. Organizations are processed sequentially, with independent checkpoints and leases in the shared table. After the round, the app sleeps for `max(1 second, intervalSeconds - total round duration)`. Output destinations and authentication settings are shared. Blob names always use `<organization-host>/yyyy/MM/dd/<auditid>.json` with UTC dates. Adding an organization does not reset existing organizations' checkpoints or change their blob paths.
 
@@ -219,7 +228,7 @@ az containerapp logs show --name $outputs.containerAppName.value --resource-grou
 
 Logs are also routed by Azure Monitor diagnostic settings to the workspace, without workspace keys in the environment. Query `ContainerAppConsoleLogs_CL` and `ContainerAppSystemLogs_CL` after ingestion starts. Operators need explicitly granted workspace query access (for example Log Analytics Reader); the runtime identity does not. Check image pull/startup, managed identity authorization, ownership acquisition, successful cycles and advancing Table checkpoints without logging audit payloads or tokens. A running revision alone does not prove successful export. Verify delivery using a separate authorized receiver with **Azure Event Hubs Data Receiver**, never extra runtime permissions.
 
-For updates, build and publish a new unique tag/digest, change only the image selector, repeat validation/what-if, then deploy incrementally. Rollback uses a retained prior digest only when the application's state schema remains compatible. Do not delete checkpoint rows as a routine restart mechanism. Historical receipt rows from older versions are ignored by the current exporter and can be removed after all old instances are stopped and upgraded; keep every `checkpoint` row.
+For updates, build, publish and lock a new unique tag, change only `IMAGE_TAG`, repeat validation/what-if, then deploy incrementally. Rollback uses a retained prior locked tag only when the application's state schema remains compatible. Do not delete checkpoint rows as a routine restart mechanism. Historical receipt rows from older versions are ignored by the current exporter and can be removed after all old instances are stopped and upgraded; keep every `checkpoint` row.
 
 ## Runtime contract and delivery limits
 

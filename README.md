@@ -74,7 +74,7 @@ Use `--Name value` or `--Name=value`. Precedence is CLI, then `DATAVERSE_EXPORTE
 
 | Setting | Meaning / Default |
 | --- | --- |
-| `OrganizationName` | Required: one short name, Dynamics hostname or HTTPS origin, or a JSON array of those values |
+| `OrganizationName` | Required: one hostname or HTTPS origin, or a comma-separated list. Legacy short names default to `crm.dynamics.com`; use the actual environment hostname to avoid regional assumptions |
 | `StorageTableEndpoint` | Required: HTTPS Table service origin |
 | `StateTableName` | Existing table; `DataverseAuditExporter` |
 | `StateId` | Logical export identity; `default` |
@@ -100,13 +100,13 @@ Existing PowerShell credential names are supported as environment aliases: `DATA
 
 #### Multiple Organizations
 
-Use a JSON array in the same environment variable. In a Docker `.env` file, preserve the JSON double quotes and do not wrap the whole value in additional quotes:
+Use a comma-separated list in the same environment variable. In a Docker `.env` file, do not wrap the value in quotes:
 
 ```dotenv
-DATAVERSE_EXPORTER_OrganizationName=["contoso.crm4.dynamics.com","fabrikam.crm4.dynamics.com"]
+DATAVERSE_EXPORTER_OrganizationName=contoso.crm4.dynamics.com,fabrikam.crm4.dynamics.com
 ```
 
-The equivalent PowerShell CLI argument is `--OrganizationName '["contoso.crm4.dynamics.com","fabrikam.crm4.dynamics.com"]'`. In application settings, use a native JSON array: `"OrganizationName": ["contoso.crm4.dynamics.com", "fabrikam.crm4.dynamics.com"]`. A single string remains supported. Empty lists, empty entries and duplicate normalized organization URLs are rejected.
+The equivalent PowerShell CLI argument is `--OrganizationName 'contoso.crm4.dynamics.com,fabrikam.crm4.dynamics.com'`. In application settings, use a string: `"OrganizationName": "contoso.crm4.dynamics.com,fabrikam.crm4.dynamics.com"`. Whitespace around entries is trimmed. A single organization is also supported. Empty lists, empty entries and duplicate normalized organization URLs are rejected. Use the actual hostname or HTTPS origin from each environment; no regional suffix needs to be inferred.
 
 After each full round, the exporter sleeps for `max(1 second, IntervalSeconds - total round duration)`, including time spent on requests, retries, and ownership operations. For an interval of 5 seconds, a 2-second round sleeps 3 seconds; a 7-second round still sleeps 1 second. There is no extra sleep between organizations. A transient failure or an organization owned by another instance does not prevent the next organization from being attempted; incompatible saved-state configuration still stops the application for operator intervention. Long backfills or retries delay the organizations later in the list.
 
@@ -144,7 +144,7 @@ The Linux image runs as a non-root user. The project-only build context excludes
 Example `.env` in the repository root, using Docker's `NAME=value` format without quotes or `export` prefixes. Replace the example organization and resource names with your own:
 
 ```dotenv
-DATAVERSE_EXPORTER_OrganizationName=["contoso.crm4.dynamics.com","fabrikam.crm4.dynamics.com"]
+DATAVERSE_EXPORTER_OrganizationName=contoso.crm4.dynamics.com,fabrikam.crm4.dynamics.com
 DATAVERSE_EXPORTER_StorageTableEndpoint=https://examplestate.table.core.windows.net
 DATAVERSE_EXPORTER_StateTableName=DataverseAuditExporter
 DATAVERSE_EXPORTER_StateId=default

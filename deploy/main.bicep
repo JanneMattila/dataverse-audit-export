@@ -21,7 +21,7 @@ param tags object = {
 @description('False bootstraps infrastructure without starting an app. Not a stop/delete switch for an existing app.')
 param deployApplication bool = false
 
-@description('Dataverse short organization name, Dynamics hostname, or HTTPS origin. Required for the run stage.')
+@description('Dataverse hostname or HTTPS origin, or a comma-separated list of these. Short names default to crm.dynamics.com. Required for the run stage.')
 param organizationName string = ''
 
 @description('State table: 3-63 alphanumeric characters, starting with a letter.')
@@ -53,13 +53,9 @@ param enableBlobOutput bool = false
 @maxLength(63)
 param blobContainerName string = 'audits'
 
-@description('Unique, never-reused release tag in dataverse-audit-exporter. Use a locked tag or prefer imageDigest; never latest. Supply exactly one tag/digest for the run stage.')
+@description('Unique, never-reused, locked release tag in dataverse-audit-exporter; never latest. Required for the run stage.')
 @maxLength(128)
 param imageTag string = ''
-
-@description('Preferred immutable image pin: sha256: followed by 64 lowercase hex characters, from the new registry.')
-@maxLength(71)
-param imageDigest string = ''
 
 @description('Event Hubs Standard throughput units, without auto-inflate.')
 @minValue(1)
@@ -91,10 +87,7 @@ var tableName = validTableName ? stateTableName : fail('stateTableName must star
 var validBlobContainerName = contains(alphanumeric, take(blobContainerName, 1)) && contains(alphanumeric, substring(blobContainerName, length(blobContainerName) - 1, 1)) && !contains(blobContainerName, '--') && length(filter(range(0, length(blobContainerName)), index => !contains('${alphanumeric}-', substring(blobContainerName, index, 1)))) == 0
 var containerName = validBlobContainerName ? blobContainerName : fail('blobContainerName must contain lowercase letters/digits or single hyphens and start and end with a letter/digit.')
 var validTag = !empty(imageTag) && toLower(imageTag) != 'latest' && !contains('.-', take(imageTag, 1)) && length(filter(range(0, length(imageTag)), index => !contains('${alphanumeric}ABCDEFGHIJKLMNOPQRSTUVWXYZ_.-', substring(imageTag, index, 1)))) == 0
-var validDigest = length(imageDigest) == 71 && startsWith(imageDigest, 'sha256:') && length(filter(range(0, length(skip(imageDigest, 7))), index => !contains('0123456789abcdef', substring(skip(imageDigest, 7), index, 1)))) == 0
-var validImageSelection = (validDigest && empty(imageTag)) || (validTag && empty(imageDigest))
-var selectedImageVersion = empty(imageDigest) ? ':${imageTag}' : '@${imageDigest}'
-var imageVersion = !deployApplication ? '' : (validImageSelection ? selectedImageVersion : fail('Run stage requires exactly one valid imageTag (not latest) or imageDigest (sha256 plus 64 lowercase hex characters).'))
+var imageVersion = !deployApplication ? '' : (validTag ? ':${imageTag}' : fail('Run stage requires a valid imageTag (not latest).'))
 var organization = deployApplication && empty(trim(organizationName)) ? fail('organizationName is required when deployApplication=true.') : organizationName
 var validatedStateId = empty(trim(stateId)) ? fail('stateId must not be whitespace.') : stateId
 

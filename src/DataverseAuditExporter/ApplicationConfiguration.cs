@@ -1,5 +1,4 @@
 using Microsoft.Extensions.Configuration;
-using System.Text.Json;
 
 namespace DataverseAuditExporter;
 
@@ -38,7 +37,7 @@ public static class ApplicationConfiguration
         configuration.Bind(options);
         var organizationSection = configuration.GetSection("OrganizationName");
         if (organizationSection.Value is null && organizationSection.GetChildren().Any())
-            options.OrganizationName = JsonSerializer.Serialize(organizationSection.Get<string[]>());
+            throw new ArgumentException("OrganizationName must be a single string containing one organization or a comma-separated list.");
         options.Validate();
         return options;
     }
@@ -65,7 +64,7 @@ public static class ApplicationConfiguration
         Dataverse Audit Exporter: continuously poll until Ctrl+C.
         Usage: dotnet DataverseAuditExporter.dll --OrganizationName <org> --StorageTableEndpoint <https://account.table.core.windows.net> [options]
 
-        --OrganizationName <org-or-array>    One organization or a JSON array, processed sequentially.
+        --OrganizationName <host-or-list>   One hostname/HTTPS origin or comma-separated list, processed sequentially.
         --ExportPath <directory>             Enable JSON file output (disabled by default).
         --BlobStorageEndpoint <https-url>    Enable Blob output with --BlobContainerName.
         --BlobContainerName <name>           Existing private Blob container.
@@ -88,7 +87,8 @@ public static class ApplicationConfiguration
         Authentication: managed identity first, then configured client secret, then local-only opted-in Azure CLI.
         Fallback occurs only for unavailable credentials, not authentication or authorization failures.
         Docker --env-file supplies environment variables; the app does not open .env files.
-        Example organization value: ["contoso.crm4.dynamics.com","fabrikam.crm4.dynamics.com"]
+        Example organization value: contoso.crm4.dynamics.com,fabrikam.crm4.dynamics.com
+        Use full hostnames/HTTPS origins; short names default to crm.dynamics.com.
         File output always uses ExportPath/<organization-host>/yyyy/MM/dd/<auditid>.json.
         Blob output uses <organization-host>/yyyy/MM/dd/<auditid>.json; existing blobs are not overwritten.
         Event Hubs delivery is at least once. Consumers deduplicate by organization and auditid.
